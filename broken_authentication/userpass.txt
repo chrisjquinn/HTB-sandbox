@@ -1,0 +1,11 @@
+advantech:admin
+admin:
+admin:admin
+admin:j5Brn9
+admin:tomcat
+role:changethis
+role1:role1
+role1:tomcat
+root:changethis
+tomcat:tomcat
+jj:
