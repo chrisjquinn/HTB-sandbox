@@ -185,22 +185,126 @@ Getting the first question was actually trickier than I thought, as it was using
 Question 2 was easy to figure out but was just fiddly by using cyberchef having hex deliminators of spaces, when it should be None!
 
 
+## Password Attacks
 
-## Authentication Credentials Handling
+### Authentication Credentials Handling
 
-## Guessable Answers
+### Guessable Answers
 An easy one really, security questions can be guessed. Used ChatGPT to enumerate 100 colours to then brute force one of the questions. Could have done the same for pizza flavours.
 
-## Username Injection
+### Username Injection
 The excercise abuses logic if the `userid` field is supplied in the POST request. It was actually easier than expected, as it was just adding this to the POST request and then making sure the password of `htbuser` was used. I changed the password for `htbuser`, so I had to make sure it was the correct one
 
 
+## Session Attacks
+
+### Brute Forcing Cookies
+History on the hacking-in of cookies. Usually one or two are related to session. There are other ways to track users in headers such as `HTTP Authentication` or an in-page token like `ViewState.HTTP Authentication`. [ViewState](https://www.w3big.com/aspnet/aspnet-viewstate.html#gsc.tab=0) is excellent for some reason, default by `.NET` web apps. They can be easily decoded if not encrypted. Main concern is that it could suffer from vulns that leads to RCE even if encrypted. Session cookies can suffer from the same that may afffect password reset tokens. 
+
+#### Cookie token tampering
+Like password reset tokens, cookies could be built from a formula (e.g. username + time). Example has a session cookie being set with key `SESSIONID` and value of `757365723A6874623B726F6C653A75736572`. If you decode this hex -> ascii:
+```bash
+echo -n 757365723A6874623B726F6C653A75736572 | xxd -r -p; echo
+
+user:htb;role:user
+```
+
+You could then change it to something like `role:admin`.
+
+#### Remember be token
+Category for cookies to keep logins, "remember me" when users click it. If algo used to generate is not secure enough, then the time is on the attackers side to brute force. 
+
+#### Encrypted or encoded token
+Weak crypto slows attacker down. Known ECB ciphers keep some original plaintext, and CBC could be used with [padding oracle attack](https://en.wikipedia.org/wiki/Padding_oracle_attack). Base64 can be recognized by a trained eye. Look at magic bytes when you see a bunch of bytes junk. [List of file signatures](https://en.wikipedia.org/wiki/List_of_file_signatures). Example of cyberchef converting from base64 and then unzipping the content. [Decodify](https://github.com/s0md3v/Decodify) can help to automate decoding guessing, whereas cyberchef has a big list that you have to attempt manually. 
+
+
+Python PoC of `automate_cookie_tampering.py` used to show that the session cookie does not need to be based on information of the user. 
 
 
 
+#### Weak Session Token
+Could not be long enough, suppose space not enough because of birthday paradox. Two users might recieve the same token. The python file goes incrementally, using John the Ripper generates non-linear values. You can combine John and wfuzz:
+```bash
+ john --incremental=LowerNum --min-length=6 --max-length=6 --stdout| wfuzz -z stdin -b HTBSESS=FUZZ --ss "Welcome" -u https://brokenauthentication.hackthebox.eu/profile.php 
+```
+PHP practicle file is `bruteforce_cookie.php`
 
 
 
+Q1 has some encoding, to get back you url decode > base64 dec > hex dec and gives `user:htbuser;role:student;time:1694352047` lets tamper with that and have the role of `admin`. worked when using the name of `super` role instead.
+
+Q2 looks like it is a uzip deflate/inflate thing from the magic bytes. Similar fashion.
+
+
+
+### Insecure Token Handling
+Diff between cookies and tokens is cookies is for arbitrary data. Tokens explicitly for authorization. We tend to recieve an id token from a trusted authority - often reerred to as a JSON Web Token (JWT) and token based authentication.
+
+JWT usually used for continuous authentication for SSO. But it can be used where compact, signed and cryptoed info needs to be transmitted.
+
+#### Lifetime
+Ensure proper expiration. If a token never expires, the [session fixation](https://owasp.org/www-community/attacks/Session_fixation) attack is even worse. 
+
+#### Session Fixation
+Rule is when access level changes, the cookie should change. Guest->User, token should change. Same if User->Super User. Attack is phishing a user with an unknown session ID from the web app. Say it was un a url param:
+https://brokenauthentication/view.php?SESSIONID=anyrandomvalue
+When a user does not have a valid session and clicks it, the web app could set it to that value. Attacker then uses this post-login to attack.
+
+#### Token in URL
+It was possible to catch tokens by making a user browse away from a site and see the `Referer` header. Nowadays the attack is not always feasable because modern browsers strip the header. It could still be a problem if the web app suffers from local file inclusion vulns or the [Referer-Policy](https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Referrer-Policy) is set in an unsafe manner. 
+
+
+#### Session Security
+Cookies need to bre truly random, just as some id to represent a session. Cookie IDs can also be encrypted sever level, but it is not a silver bullet. Session security should cover multiple logins for the same user and concurrent usage of the same session token from different endpoints.
+
+#### Cookie Security
+Should be created with the correct path value, set as `httponly` and `secure`. Plus have proper domain scape. Unsecured cookie could be stolen and reused through XSS for MitM attacks.
+
+
+
+## Skills assessment
+Password policy:
+- at least 20 characters
+- first letter capitalised
+- some lowercase
+- ends in a number
+- contains a special character
+
+user of root and password of P@sswordtimeslength1 worked
+
+From the support page we have some clues where we can send a message to support with our country code added. Enumerating them in `country_users_enum.py` and creating the file via bash:
+```bash
+python3 country_users_enum.py > users.txt
+```
+Then the `brute_force_messages.py` then went off, the country codes had to be lower (via trying). Got the following users:
+[+] Valid username: support.cn
+[+] Valid username: support.gr
+[+] Valid username: support.it
+[+] Valid username: support.us
+
+Making that a valid username file and now to trim a password file. Asking chatGPT for the grep gives:
+```bash
+grep -o '\<[A-Z][a-zA-Z]*[#@\$][a-zA-Z]*[0-9]\{1,\}\>' yourfile.txt
+```
+changed:
+```bash
+grep -o '\<[A-Z][a-zA-Z0-9]*[#@\$][a-zA-Z]*[0-9]\>' yourfile.txt
+```
+
+from an online blog:
+```bash
+grep -E '^[A-Z]' /usr/share/wordlists/rockyou.txt | grep '[0-9]$' | grep '[^A-Za-z0-9]' | awk 'length >= 20 && length <= 29'
+```
+edited:
+
+```bash
+grep -E '^[A-Z]' rockyou.txt | grep '[0-9]$' | grep '[#\$@]' | awk 'length >= 20 && length <= 29' > passwords.txt
+```
+Seems like the above is not the best actually. Cracked a password of `Mustang#firebird1995`. 
+
+Logging in with support.us and `Mustang#firebird1995` gives us a cookie of `YWY2MTcyZGExZjM1M2E5YjliYmJhYWMzYWMxZWQ0YzQ6NDM0OTkwYzhhMjVkMmJlOTQ4NjM1NjFhZTk4YmQ2ODI%3D` which base64 decodes to `af6172da1f353a9b9bbbaac3ac1ed4c4:434990c8a25d2be94863561ae98bd682`, an MD5 hash of `supoprt.us:support`
+
+So we could repeat the same thing with admin.us:admin? Something like that? This actually worked first time haha. The cyberchef recipe to craft a cookie of the admin is [this](https://gchq.github.io/CyberChef/#recipe=Fork(':',':',false)MD5()Merge(true)To_Base64('A-Za-z0-9%2B/%3D')URL_Encode(false)&input=YWRtaW4udXM6YWRtaW4).
 
 
 

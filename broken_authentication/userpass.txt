@@ -1,4 +1,3 @@
-advantech:admin
 admin:
 admin:admin
 admin:j5Brn9
