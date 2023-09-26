@@ -489,3 +489,22 @@ Anyways, UID 52 gives us a username of "a.corrales"
 Getting the token via a repeater and then making a POST to `reset/php` with the admin's token is giving "Access denied" but when making a PUT we get "Missing parameters"
 
 -> Need to either get access to user UID 52, or give myself permissions like the user of 52, company "Administrator"
+
+Managed to change the password for the admin via doing a GET on reset.php using the token instead of POST.
+
+Now to login with the admin, works, we see a new page of `event.php` which POSTs to `addEvent.php` with some XML data:
+```xml
+<root>
+    <name>
+        Name
+    </name>
+    <details>
+        details
+    </details>
+    <date>
+        2023-09-05
+    </date>
+</root>
+```
+
+And the response is `Event 'Name' has been created`. Lets try some XXE stuff on there. Start simple. Doing the first "inlane freight" worked, along with SYSTEM "file:///etc/passwd". doing file:///flag.php did not work but when converting it to base64 it then worked!
