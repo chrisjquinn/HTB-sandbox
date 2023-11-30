@@ -135,3 +135,35 @@ Null Bytes
 PHP <5.5 were vulnerable to nul byte injection. Which means adding the null byte `%00` at the end of the string would terminate the string and not consider anything after. `/etc/passwd%00` means it would add `.php` at the end, but the null byte stops it. 
 
 Excercise was found by using escapes via `....//`
+
+
+
+### PHP Filters
+If you identify a LFI in a PHP web app, then you can utilise [PHP wrappers](https://www.php.net/manual/en/wrappers.php.php) to be able to extend our exploitation, and even get to RCE. Wrappers allow us to access diff I/O streams, file descriptors and memory streams. Also beneficial for XXE! Done in the Web Attacks module. 
+
+#### Input Filters
+Input filters are a type of php wrappers. Done via `php://filter/` where "filter" is replaced with the wrapper we want. Main ones we want are `resource` and `read`. There are many types of filters, like string, conversion, compression & encryptio. Useful for LFI is `convert.base64-encode`.
+
+#### Fuzzing for PHP Files
+Use fuzzing like ffuf or gobuster:
+```bash
+Chris-113@htb[/htb]$ ffuf -w /opt/useful/SecLists/Discovery/Web-Content/directory-list-2.3-small.txt:FUZZ -u http://<SERVER_IP>:<PORT>/FUZZ.php
+```
+We are not restricted to 200 codes here, scan for all codes. Also read the source code for other references to PHP files.
+
+#### Standard PHP inclusion
+Seen in previous cases were it is supplied as param, e.g. `site.com?language=config` pointing to `config.php` by adding on the extension at the end. We would be interested in reading the PGP source code through LFI. That's where b64 filter is useful, package the source code instead of having it being executed and rendered. Same applies to other languages, long as the vulnerable function can execute files. 
+
+#### Source Code Disclosure
+Once we have a list of PHP files we want tp read, we can start doing so with the base64 PHP filter. Let's try to read the source code of `config.php`:
+```url
+php://filter/read=convert.base64-encode/resource=config
+```
+
+And then decode the text in terminal. 
+
+> Excercise is asking to fuzz the web app for other pgp scripts, and then read one of the config files and submmit the database password as the answer. 
+
+Running fuff gives us a value of `index`. Let's try the whole thing:
+```
+http://$IP:$PORT/index.php?language=php://filter/read=convert.base64-encode/resource=index```
